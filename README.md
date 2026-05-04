@@ -10,7 +10,7 @@
 本项目基于原[mimo2api](https://github.com/Water008/MiMo2API) 修改。
 本项目所修改代码均为ai完成，不含任何一句人工代码，望周知！
 
-> **💡 不需要工具调用？** 如果你的使用场景是纯对话（写作、翻译、代码、问答），建议使用 [`no-tools` 分支](#无工具分支-no-tools) — 不注入工具 prompt，上下文更干净，输出质量更高。
+> **💡 不需要工具调用或需要 TTS 语音合成？** 建议使用 [`no-tools` 分支](#无工具分支-no-tools) — 不注入工具 prompt，上下文更干净、输出质量更高，且完整保留 TTS 语音合成功能。
 
 
 
@@ -100,7 +100,7 @@ chmod +x deploy.sh
 
 部署完成后，服务已在 **前台** 启动。见下方[管理命令](#管理命令)了解后台运行等方式。
 
-> 💡 **不需要工具调用？** 克隆 [`no-tools` 分支](https://github.com/Fly143/MiMo2API/tree/no-tools) 即可获得更干净的纯对话版本（无 prompt 注入，输出质量更高）。
+> 💡 **不需要工具调用或需要 TTS？** 克隆 [`no-tools` 分支](https://github.com/Fly143/MiMo2API/tree/no-tools) 即可获得更干净的纯对话版本（无 prompt 注入，输出质量更高），且包含完整语音合成（TTS）功能。
 
 ### 手动安装
 
@@ -415,6 +415,7 @@ git clone -b no-tools https://github.com/Fly143/MiMo2API.git
 | 深度思考 | ✅ | ✅ |
 | 多账号 | ✅ | ✅ |
 | 模型发现 | ✅ | ✅ |
+| TTS 语音合成 | ❌ 不包含 | ✅ `/v1/audio/speech` |
 
 **效果：** 上下文更干净，模型注意力完全集中在用户问题上，回答更专注、质量更高，代码也更简洁。对于大多数日常使用场景，无工具分支是更好的选择。
 
