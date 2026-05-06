@@ -1645,6 +1645,25 @@ async def _stream_response_events(body: dict, account):
                                             "content_index": 0,
                                             "delta": clean,
                                         }
+                                elif ev.type == 'tool_calls':
+                                    for tc in ev.data:
+                                        idx = len(tool_calls_map)
+                                        tool_calls_map[idx] = {
+                                            "id": tc.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+                                            "name": tc.get("function", {}).get("name", ""),
+                                            "arguments": tc.get("function", {}).get("arguments", "{}"),
+                                            "status": "completed",
+                                        }
+                                        fc_item = _response_function_call_item(tc)
+                                        oi, start_evt = _start_output_item(fc_item)
+                                        if start_evt:
+                                            yield start_evt
+                                        yield {
+                                            "type": "response.function_call_arguments.delta",
+                                            "item_id": fc_item["id"],
+                                            "output_index": oi,
+                                            "delta": fc_item.get("arguments", "{}"),
+                                        }
                         buffer = keep
                         break
                     else:
