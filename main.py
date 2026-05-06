@@ -15,8 +15,8 @@ from app.batch import init_batch_storage as init_anthropic_batches
 # 创建FastAPI应用
 app = FastAPI(
     title="Mimo2API",
-    description="将小米 Mimo AI 转换为 OpenAI 兼容 API",
-    version="1.0.0"
+    description="将小米 Mimo AI 转换为 OpenAI + Anthropic 兼容 API（Chat / Responses / Anthropic Messages）",
+    version="2.0.0"
 )
 
 # 添加CORS中间件
@@ -30,6 +30,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_discover_models():
+    import os as _anthropic_os
+    from app.anthropic_adapter import init_batch_storage as _mimo_init_batch_storage
+    _mimo_init_batch_storage(_anthropic_os.path.join(_anthropic_os.path.dirname(_anthropic_os.path.abspath(__file__)), ".anthropic_batches"))
     """服务启动时预探测模型，避免首次请求返回3个硬编码模型"""
     try:
         await _do_discover()
