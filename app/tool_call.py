@@ -975,7 +975,7 @@ def _parse_mimoml_parameters(inner_text: str) -> Dict[str, Any]:
     for m in param_pattern.finditer(inner_text):
         key = m.group(1).strip()
         val_raw = m.group(2).strip()
-        val = _parse_param_value(val_raw)
+        val = _parse_param_value(val_raw, param_name=key)
 
         # 重复 key → 合并为数组
         if key in args:
@@ -989,34 +989,43 @@ def _parse_mimoml_parameters(inner_text: str) -> Dict[str, Any]:
     return args
 
 
-def _parse_param_value(val_raw: str) -> Any:
-    """解析单个 parameter 的值，处理 CDATA / JSON / 结构化 XML / HTML 实体。"""
+def _parse_param_value(val_raw: str, param_name: str = "") -> Any:
+    """解析单个 parameter 的值。"""
     if not val_raw:
         return ""
 
-    # CDATA 提取
+    # CDATA 提取（安全版）
     if val_raw.startswith(_CDATA_OPEN) and val_raw.endswith(_CDATA_CLOSE):
-        inner = val_raw[len(_CDATA_OPEN):-len(_CDATA_CLOSE)]
-        # 结构化 CDATA 恢复：如果 CDATA 内是完整 XML，尝试解析
+        inner = _extract_cdata_safe(val_raw)
+        if _preserves_cdata_string(param_name):
+            return _html_unescape(inner)
+        inner = _normalize_br(inner)
         if inner.strip().startswith("<") and ">" in inner:
             parsed = _parse_structured_xml(inner)
             if parsed is not None:
                 return parsed
         return _html_unescape(inner)
 
-    # 检查是否包含子节点（结构化 XML 参数）
+    # 结构化 XML
     if "<" in val_raw and ">" in val_raw:
         parsed = _parse_structured_xml(val_raw)
         if parsed is not None and parsed != {}:
             return parsed
 
-    # JSON 字面量
+    # JSON
     try:
         return json.loads(val_raw)
     except (json.JSONDecodeError, ValueError):
         pass
 
-    # 自动类型推断 + HTML 实体解码
+    # JSON 修复
+    repaired = _repair_loose_json(val_raw)
+    if repaired != val_raw:
+        try:
+            return json.loads(repaired)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     result = _auto_type(val_raw)
     if isinstance(result, str):
         result = _html_unescape(result)
@@ -1146,3 +1155,98 @@ def _sanitize_loose_cdata(text: str) -> str:
             break
 
     return ''.join(result_parts)
+
+
+# ══════ JSON修复 + 空参数 + Schema + CDATA保护 + br ══════
+
+import re as _re2
+_UNQUOTED_KEY_PAT = _re2.compile(r"([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:")
+_MISSING_ARR_PAT = _re2.compile(r"(:\s*)(\{(?:[^{}]|\{[^{}]*\})*\}(?:\s*,\s*\{(?:[^{}]|\{[^{}]*\})*\})+)")
+_BR_PAT = _re2.compile(r"<br\s*/?>", _re2.IGNORECASE)
+_CDATA_STR = {"content","file_content","text","prompt","query","command","cmd","script","code","old_string","new_string","pattern","path","file_path","result","input"}
+
+def _repair_loose_json(s):
+    s=s.strip()
+    if not s: return s
+    s=_UNQUOTED_KEY_PAT.sub(r'"":',s)
+    s=_MISSING_ARR_PAT.sub(r'[]',s)
+    return _rjb(s)
+
+def _rjb(s):
+    if '\\' not in s: return s
+    r=[]; i=0
+    while i<len(s):
+        if s[i]=='\\':
+            if i+1<len(s):
+                n=s[i+1]
+                if n in ('"','\\','/','b','f','n','r','t'):
+                    r.append('\\');r.append(n);i+=2;continue
+                if n=='u' and i+5<len(s):
+                    h=s[i+2:i+6]
+                    if all(c in '0123456789abcdefABCDEF' for c in h):
+                        r.append('\\u');r.append(h);i+=6;continue
+            r.append('\\\\');i+=1
+        else: r.append(s[i]);i+=1
+    return ''.join(r)
+
+def _has_meaningful_value(v):
+    if v is None: return False
+    if isinstance(v,str): return v.strip()!=""
+    if isinstance(v,(int,float,bool)): return True
+    if isinstance(v,dict): return bool(v) and any(_has_meaningful_value(c) for c in v.values())
+    if isinstance(v,list): return bool(v) and any(_has_meaningful_value(c) for c in v)
+    return True
+
+def _coerce_string_params(tcs,tools=None):
+    if not tools or not tcs: return tcs
+    si={}
+    for t in tools:
+        fn=_safe_get(t,"function") or t
+        n=_safe_get(fn,"name")
+        p=_safe_get(fn,"parameters")
+        if n and isinstance(p,dict): si[n]=p
+    for tc in tcs:
+        fn=tc.get("function",{})
+        nm=fn.get("name","")
+        a=fn.get("arguments","{}")
+        if isinstance(a,dict): args=a
+        else:
+            try: args=json.loads(a) if isinstance(a,str) else a
+            except: continue
+        sc=si.get(nm)
+        if not sc: continue
+        pp=sc.get("properties",{})
+        if not pp: continue
+        for k,v in args.items():
+            pr=pp.get(k,{})
+            if isinstance(pr,dict) and pr.get("type")=="string" and not isinstance(v,str) and v is not None:
+                args[k]=str(v)
+        fn["arguments"]=json.dumps(args,ensure_ascii=False)
+    return tcs
+
+def _preserves_cdata_string(name):
+    return name.strip().lower() in _CDATA_STR
+
+def _extract_cdata_safe(text):
+    if not text: return text
+    lw=text.lower(); st=lw.find("<![cdata[")
+    if st<0: return text
+    cs=st+len("<![CDATA[")
+    lines=text[cs:].split('\n')
+    inf=False; fm=""; col=[]
+    for ln in lines:
+        sl=ln.lstrip()
+        if not inf:
+            if sl.startswith('```') or sl.startswith('~~~'):
+                fm=sl[:3]; inf=True
+        elif sl.startswith(fm): inf=False
+        if not inf and ']]>' in ln:
+            ei=ln.index(']]>')
+            col.append(ln[:ei])
+            return '\n'.join(col)
+        col.append(ln)
+    return '\n'.join(col)
+
+def _normalize_br(text):
+    if not text or '<br' not in text.lower(): return text
+    return _BR_PAT.sub('\n',text).replace('\r\n','\n')
