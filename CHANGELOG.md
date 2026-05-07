@@ -2,6 +2,28 @@
 
 本文件记录 MiMo2API 的所有重要变更。
 
+## [v2.3.2] — 2026-05-08
+
+### Added
+- **JSON 修复** — `_repair_loose_json()`：未加引号 key、缺失数组括号、非法反斜杠自动修复
+- **Schema 归一化** — `_coerce_string_params()`：根据 tool schema 将非字符串值自动转为字符串
+- **空参数过滤** — `_has_meaningful_value()`：跳过无实际内容的工具调用参数
+- **CDATA 参数保护** — content/command/prompt 等文本参数保留原始字符串
+- **CDATA 内嵌围栏块** — `_extract_cdata_safe()`：围栏代码块内的 ]]> 不误判
+- **`<br>` 归一化** — `_normalize_br()`：CDATA 中的 `<br>` 标签自动转为换行符
+
+## [v2.3.1] — 2026-05-08
+
+### Added
+- **MiMoML 噪声容错** — `strip_mimoml()` 支持 7 种格式变体（缺管道、重复 <、全宽、连字符等）
+- **围栏代码块保护** — 自动跳过 markdown 代码块内的 MiMoML 示例
+- **结构化参数恢复** — `<item>` 子节点转为数组，嵌套 XML 还原对象
+- **缺失开标签修复** — 有关闭标签无开头时自动补回
+- **HTML 实体解码** — `&lt;` `&gt;` `&amp;` 等自动还原
+
+### Changed
+- 策略精简 7→5：删除中文格式和自由文本策略
+
 ## [v2.3.0] — 2026-05-08
 
 ### Added
