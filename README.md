@@ -490,7 +490,7 @@ curl -X POST http://localhost:8080/v1/messages \
 
 ## 工具调用详解
 
-MiMo API 本身**不支持** OpenAI function calling 格式。本代理通过**MiMoML 提示词注入 + 7 策略提取**实现：
+MiMo API 本身**不支持** OpenAI function calling 格式。本代理通过**MiMoML 提示词注入 + 5 策略提取**实现：
 
 ### 提示词注入
 
@@ -504,21 +504,28 @@ MiMo API 本身**不支持** OpenAI function calling 格式。本代理通过**M
 </|MiMoML|tool_calls>
 ```
 
-### 7 种提取策略（按优先级）
+### 5 种提取策略（按优先级）
 
 | 策略 | 格式 | 说明 |
 |------|------|------|
-| 0 | `<\|MiMoML\|tool_calls><\|MiMoML\|invoke name="X">...</\|MiMoML\|invoke></\|MiMoML\|tool_calls>` | MiMoML 格式，最高优先级 |
-| 1 | `TOOL_CALL: name(key=value)` | 正则匹配，旧格式兜底 |
-| 2 | `{"name": "x", "arguments": {...}}` | JSON 块解析 |
-| 3 | `<tool_call><function=NAME><parameter=K>V</parameter></function></tool_call>` | MiMo 原生 XML 格式 |
-| 4 | `<function_call>{"name":"x","arguments":{...}}</function_call>` | XML 包裹 JSON |
-| 5 | `[调用工具: NAME]` | 中文格式 |
-| 6 | `name(args)` | 自由文本关键词匹配 |
+| MiMoML | `<\|MiMoML\|tool_calls><\|MiMoML\|invoke name="X">...</\|MiMoML\|invoke></\|MiMoML\|tool_calls>` | 主力格式，7 种噪声变体容错 |
+| TOOL_CALL | `TOOL_CALL: name(key=value)` | 旧格式兜底 |
+| JSON | `{"name":"x","arguments":{...}}` | JSON 块解析 |
+| XML | `<tool_call><function=NAME><parameter=K>V</parameter></function></tool_call>` | MiMo 原生 XML |
+| 混合 | `<function_call>{"name":"x","arguments":{...}}</function_call>` | XML 包裹 JSON |
+
+### 容错能力
+
+- **噪声容错** — 支持缺管道、重复 `<`、全宽 `｜`、连字符 `mimoml-` 等 7 种格式变体
+- **围栏代码块** — 自动跳过 markdown 代码块内的 MiMoML 示例
+- **JSON 修复** — 未加引号 key、缺失数组括号、非法反斜杠自动修复
+- **Schema 归一化** — 根据 tool schema 将非字符串值自动转为字符串
+- **CDATA 保护** — content/command/prompt 等文本参数保留原始字符串
+- **缺失开标签** — 有关闭标签无开头时自动补回
 
 ### 响应清理
 
-提取成功后，自动清理响应中的工具残留文本（TOOL_CALL 行、XML 标签、JSON 块）。
+提取成功后，自动清理响应中的工具残留文本（MiMoML 标签、XML 标签、TOOL_CALL 行、JSON 块、CDATA）。
 
 ### 流式筛分
 
