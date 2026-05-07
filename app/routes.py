@@ -27,6 +27,8 @@ from .session_store import (
     get_or_create_session as _get_or_create_session,
     update_tokens as _update_session_tokens,
     update_fingerprint as _update_session_fingerprint,
+    get_expired_sessions as _get_expired_sessions,
+    remove_session as _remove_session,
 )
 from .response_store import (
     save_response_record as _save_response_record,
@@ -938,6 +940,44 @@ async def clear_usage():
     """清空全部用量统计数据。"""
     _clear_usage()
     return {"ok": True}
+
+
+@router.post("/api/cleanup")
+async def manual_cleanup():
+    """手动触发过期会话清理。"""
+    try:
+        expired = _get_expired_sessions()
+        if not expired:
+            return {"ok": True, "msg": "没有过期会话", "deleted": 0}
+
+        print(f"[Cleanup] Found {len(expired)} expired sessions, deleting...")
+        deleted = 0
+        # 按账号分组
+        by_account = {}
+        for account_label, conv_id, model, days_ago in expired:
+            by_account.setdefault(account_label, []).append(conv_id)
+
+        for account_label, conv_ids in by_account.items():
+            # 找到对应账号
+            acc = None
+            for a in config_manager.config.mimo_accounts:
+                if a.user_id == account_label:
+                    acc = a
+                    break
+            if not acc:
+                continue
+
+            client = MimoClient(acc)
+            for conv_id in conv_ids:
+                if await client.delete_conversations([conv_id]):
+                    _remove_session(account_label, conv_id)
+                    deleted += 1
+                    print(f"[Cleanup] Deleted: {conv_id[:12]}...")
+
+        print(f"[Cleanup] Done: {deleted}/{len(expired)} deleted")
+        return {"ok": True, "msg": f"清理完成: {deleted}/{len(expired)}", "deleted": deleted}
+    except Exception as e:
+        return {"ok": False, "msg": str(e)}
 
 
 # ─── 模型列表（免鉴权，供管理页面使用） ───────────────────────

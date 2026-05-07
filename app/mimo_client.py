@@ -201,5 +201,36 @@ class MimoClient:
 
         think_content = text[start + 7:end]
         content = text[end + 8:]
+        return content, think_content
+
+    async def delete_conversations(self, conversation_ids: list) -> bool:
+        """删除 MiMo 服务端对话记录。
+
+        Args:
+            conversation_ids: 要删除的 conversation_id 列表
+
+        Returns:
+            True 表示全部删除成功
+        """
+        if not conversation_ids:
+            return True
+        url = "https://aistudio.xiaomimimo.com/open-apis/chat/conversation/delete"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    url,
+                    params={"xiaomichatbot_ph": self.account.xiaomichatbot_ph},
+                    headers=self._create_headers(),
+                    cookies=self._create_cookies(),
+                    json=conversation_ids,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("code") == 0
+                print(f"[Cleanup] MiMo delete failed: HTTP {resp.status_code}")
+                return False
+        except Exception as e:
+            print(f"[Cleanup] MiMo delete error: {e}")
+            return False
 
         return content, think_content

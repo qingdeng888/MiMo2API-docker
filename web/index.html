@@ -228,6 +228,7 @@
                     <div class="btn-group">
                         <button class="btn-outline" onclick="loadAccounts()">刷新</button>
                         <button class="btn-success" onclick="testAll()">测试全部</button>
+                        <button class="btn-primary" onclick="cleanupSessions()" style="background:#7c3aed">清理过期会话</button>
                     </div>
                 </div>
 
@@ -485,6 +486,19 @@
             } catch (e) { toast('请求失败', true); }
             btn.disabled = false;
             btn.textContent = '测试全部';
+        }
+
+        async function cleanupSessions() {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '清理中...';
+            try {
+                const r = await fetch('/api/cleanup', { method: 'POST' });
+                const d = await r.json();
+                toast(d.ok ? d.msg : '清理失败: ' + (d.msg || '未知'), !d.ok);
+            } catch (e) { toast('清理失败: ' + e.message, true); }
+            btn.disabled = false;
+            btn.textContent = '清理过期会话';
         }
 
         async function delAcct(i) {

@@ -19,7 +19,7 @@ SESSION_FILE = Path(__file__).parent.parent / "sessions.json"
 # token 超限后强制清屏（MiMo 上下文 ~128K，留余量）
 TOKEN_THRESHOLD = 150000
 # 会话 7 天过期
-SESSION_TTL = 7 * 86400
+SESSION_TTL = 3 * 86400
 # 每个账号最多保留的会话数
 MAX_SESSIONS_PER_ACCOUNT = 20
 
@@ -189,3 +189,44 @@ def update_tokens(account_id: str, conversation_id: str, prompt_tokens: int) -> 
             s['last_used'] = time.time()
             break
     _save({**db, key: sessions})
+
+
+def get_expired_sessions(account_id: str = None, ttl: int = SESSION_TTL) -> list:
+    """获取过期的会话列表。
+
+    Args:
+        account_id: None=所有账号, str=指定账号
+        ttl: 多少秒未使用算过期
+
+    Returns:
+        [(account_label, conversation_id, model, days_ago), ...]
+    """
+    db = _load()
+    now = time.time()
+    expired = []
+
+    keys = [f"account_{account_id}"] if account_id else list(db.keys())
+    for key in keys:
+        if not key.startswith("account_"):
+            continue
+        account_label = key[8:]  # strip "account_" prefix
+        for s in db.get(key, []):
+            age = now - s.get("last_used", s.get("created", now))
+            if age > ttl:
+                expired.append((
+                    account_label,
+                    s["conversation_id"],
+                    s.get("model", ""),
+                    round(age / 86400, 1),
+                ))
+
+    return expired
+
+
+def remove_session(account_id: str, conversation_id: str) -> None:
+    """从存储中移除指定会话。"""
+    db = _load()
+    key = f"account_{account_id}"
+    sessions = db.get(key, [])
+    db[key] = [s for s in sessions if s.get("conversation_id") != conversation_id]
+    _save(db)
