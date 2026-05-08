@@ -40,19 +40,29 @@ async def startup_discover_models():
     except Exception as e:
         print(f"⚠️ 模型预探测失败（不影响服务）: {e}")
 
-    # 清理过期会话
-    try:
-        from app.session_store import get_expired_sessions, remove_session
-        from app.mimo_client import MimoClient
-        from app.config import config_manager
-        expired = get_expired_sessions()
-        if expired:
-            print(f"[启动] 发现 {len(expired)} 个过期会话，清理中...")
+    # 后台清理过期会话（避免风控）
+    print("[启动] 后台清理过期会话...")
+    import threading
+    threading.Thread(target=_cleanup_old_sessions, daemon=True).start()
+
+
+def _cleanup_old_sessions():
+    """后台清理过期会话，每个删除间隔 10 秒。"""
+    import time, asyncio
+    async def _run():
+        try:
+            from app.session_store import get_expired_sessions, remove_session
+            from app.mimo_client import MimoClient
+            from app.config import config_manager
+            expired = get_expired_sessions()
+            if not expired:
+                return
+            print(f"[Cleanup] Found {len(expired)} expired sessions, deleting with 10s delay...")
             by_account = {}
             for account_label, conv_id, model, days_ago in expired:
-                by_account.setdefault(account_label, []).append(conv_id)
+                by_account.setdefault(account_label, []).append((conv_id, days_ago))
             deleted = 0
-            for account_label, conv_ids in by_account.items():
+            for account_label, conv_items in by_account.items():
                 acc = None
                 for a in config_manager.config.mimo_accounts:
                     if a.user_id == account_label:
@@ -61,13 +71,19 @@ async def startup_discover_models():
                 if not acc:
                     continue
                 client = MimoClient(acc)
-                for conv_id in conv_ids:
-                    if await client.delete_conversations([conv_id]):
-                        remove_session(account_label, conv_id)
-                        deleted += 1
-            print(f"[启动] 清理完成: {deleted}/{len(expired)}")
-    except Exception as e:
-        print(f"[启动] 会话清理失败: {e}")
+                for conv_id, days_ago in conv_items:
+                    try:
+                        if await client.delete_conversations([conv_id]):
+                            remove_session(account_label, conv_id)
+                            deleted += 1
+                            print(f"[Cleanup] Deleted: {conv_id[:12]}... ({days_ago}d old)")
+                    except Exception:
+                        pass
+                    time.sleep(10)
+            print(f"[Cleanup] Done: {deleted}/{len(expired)}")
+        except Exception as e:
+            print(f"[Cleanup] Failed: {e}")
+    asyncio.run(_run())
 
 
 # 注册路由
