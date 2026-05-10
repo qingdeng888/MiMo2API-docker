@@ -261,6 +261,17 @@ def _strip_mimo_prefix(text: str) -> str:
     return cleaned.strip()
 
 
+def _clean_response_text(text: str, tool_names: list = None) -> str:
+    """综合文本清理管道：TOOL_RESULT + 引用 + 工具前缀 + MiMo前缀 + 工具文本残留。"""
+    text = _strip_tool_result_blocks(text)
+    text = _strip_citations(text)
+    if tool_names:
+        text = _strip_tool_name_prefix(text, tool_names)
+    text = _strip_mimo_prefix(text)
+    text = clean_tool_text(text)
+    return text
+
+
 # ─── Think 标签处理 ──────────────────────────────────────────
 
 def _safe_flush(text: str) -> Tuple[str, str]:
@@ -457,6 +468,7 @@ async def chat_completions(
         # 清理模型输出杂质
         content = _strip_tool_result_blocks(content)
         content = _strip_citations(content)
+        content = clean_tool_text(content)
 
         msg_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
@@ -562,9 +574,7 @@ async def _stream_response(
                                 # Feed through sieve — buffer text, collect tool calls
                                 for ev in sieve.feed(safe):
                                     if ev.type == 'text':
-                                        clean = _strip_tool_result_blocks(ev.data)
-                                        clean = _strip_citations(clean)
-                                        clean = _strip_tool_name_prefix(clean, tool_names)
+                                        clean = _clean_response_text(ev.data, tool_names)
                                         if clean:
                                             content_buffer_chunks.append(clean)
                                     elif ev.type == 'tool_calls':
@@ -577,9 +587,7 @@ async def _stream_response(
                         if safe:
                             for ev in sieve.feed(safe):
                                 if ev.type == 'text':
-                                    clean = _strip_tool_result_blocks(ev.data)
-                                    clean = _strip_citations(clean)
-                                    clean = _strip_tool_name_prefix(clean, tool_names)
+                                    clean = _clean_response_text(ev.data, tool_names)
                                     if clean:
                                         content_buffer_chunks.append(clean)
                                 elif ev.type == 'tool_calls':
@@ -606,9 +614,7 @@ async def _stream_response(
             if buffer and not in_think:
                 for ev in sieve.feed(buffer):
                     if ev.type == 'text':
-                        clean = _strip_tool_result_blocks(ev.data)
-                        clean = _strip_citations(clean)
-                        clean = _strip_tool_name_prefix(clean, tool_names)
+                        clean = _clean_response_text(ev.data, tool_names)
                         if clean:
                             content_buffer_chunks.append(clean)
                     elif ev.type == 'tool_calls':
@@ -617,9 +623,7 @@ async def _stream_response(
             # 刷新 sieve，回收最终工具调用（缓冲，不立即发）
             for ev in sieve.flush():
                 if ev.type == 'text':
-                    clean = _strip_tool_result_blocks(ev.data)
-                    clean = _strip_citations(clean)
-                    clean = _strip_tool_name_prefix(clean, tool_names)
+                    clean = _clean_response_text(ev.data, tool_names)
                     if clean:
                         content_buffer_chunks.append(clean)
                 elif ev.type == 'tool_calls':
@@ -669,9 +673,7 @@ async def _stream_response(
                         if idx != -1:
                             safe, keep = _safe_flush(buffer[:idx])
                             if safe:
-                                clean = _strip_tool_result_blocks(safe)
-                                clean = _strip_citations(clean)
-                                clean = _strip_mimo_prefix(clean)
+                                clean = _clean_response_text(safe)
                                 if clean:
                                     yield _build_chunk(msg_id, model, created=created_t, content=clean)
                             in_think = True
@@ -680,9 +682,7 @@ async def _stream_response(
 
                         safe, keep = _safe_flush(buffer)
                         if safe:
-                            clean = _strip_tool_result_blocks(safe)
-                            clean = _strip_citations(clean)
-                            clean = _strip_mimo_prefix(clean)
+                            clean = _clean_response_text(safe)
                             if clean:
                                 yield _build_chunk(msg_id, model, created=created_t, content=clean)
                         buffer = keep
@@ -705,9 +705,7 @@ async def _stream_response(
 
             # 发送剩余内容
             if buffer:
-                clean = _strip_tool_result_blocks(buffer)
-                clean = _strip_citations(clean)
-                clean = _strip_mimo_prefix(clean)
+                clean = _clean_response_text(buffer)
                 if clean:
                     if in_think:
                         yield _build_chunk(msg_id, model, created=created_t, reasoning=clean)
@@ -1474,6 +1472,7 @@ async def _do_response_chat(body: dict, account) -> tuple:
     # 清理输出
     content = _strip_tool_result_blocks(content)
     content = _strip_citations(content)
+    content = clean_tool_text(content)
 
     # 额外处理：模型可能输出多个 think 块，_parse_think_tags 只剥除了第一个
     remaining_thinks = []
@@ -1662,9 +1661,7 @@ async def _stream_response_events(body: dict, account):
                             if safe:
                                 for ev in sieve.feed(safe):
                                     if ev.type == 'text':
-                                        clean = _strip_tool_result_blocks(ev.data)
-                                        clean = _strip_citations(clean)
-                                        clean = _strip_tool_name_prefix(clean, tool_names)
+                                        clean = _clean_response_text(ev.data, tool_names)
                                         if clean:
                                             text_parts.append(clean)
                                             if not content_started:
@@ -1695,9 +1692,7 @@ async def _stream_response_events(body: dict, account):
                         if safe:
                             for ev in sieve.feed(safe):
                                 if ev.type == 'text':
-                                    clean = _strip_tool_result_blocks(ev.data)
-                                    clean = _strip_citations(clean)
-                                    clean = _strip_tool_name_prefix(clean, tool_names)
+                                    clean = _clean_response_text(ev.data, tool_names)
                                     if clean:
                                         text_parts.append(clean)
                                         if not content_started:
@@ -1792,9 +1787,7 @@ async def _stream_response_events(body: dict, account):
             if buffer and not in_think:
                 for ev in sieve.feed(buffer):
                     if ev.type == 'text':
-                        clean = _strip_tool_result_blocks(ev.data)
-                        clean = _strip_citations(clean)
-                        clean = _strip_tool_name_prefix(clean, tool_names)
+                        clean = _clean_response_text(ev.data, tool_names)
                         if clean:
                             text_parts.append(clean)
                             if not content_started:
@@ -1820,9 +1813,7 @@ async def _stream_response_events(body: dict, account):
 
             for ev in sieve.flush():
                 if ev.type == 'text':
-                    clean = _strip_tool_result_blocks(ev.data)
-                    clean = _strip_citations(clean)
-                    clean = _strip_tool_name_prefix(clean, tool_names)
+                    clean = _clean_response_text(ev.data, tool_names)
                     if clean:
                         text_parts.append(clean)
                         if not content_started:
@@ -1891,9 +1882,7 @@ async def _stream_response_events(body: dict, account):
                         if idx != -1:
                             safe, keep = _safe_flush(buffer[:idx])
                             if safe:
-                                clean = _strip_tool_result_blocks(safe)
-                                clean = _strip_citations(clean)
-                                clean = _strip_mimo_prefix(clean)
+                                clean = _clean_response_text(safe)
                                 if clean:
                                     text_parts.append(clean)
                                     if not content_started:
@@ -1922,9 +1911,7 @@ async def _stream_response_events(body: dict, account):
 
                         safe, keep = _safe_flush(buffer)
                         if safe:
-                            clean = _strip_tool_result_blocks(safe)
-                            clean = _strip_citations(clean)
-                            clean = _strip_mimo_prefix(clean)
+                            clean = _clean_response_text(safe)
                             if clean:
                                 text_parts.append(clean)
                                 if not content_started:
@@ -1990,9 +1977,7 @@ async def _stream_response_events(body: dict, account):
 
             # 发送剩余缓冲区内容
             if buffer:
-                clean = _strip_tool_result_blocks(buffer)
-                clean = _strip_citations(clean)
-                clean = _strip_mimo_prefix(clean)
+                clean = _clean_response_text(buffer)
                 if clean:
                     if in_think:
                         reasoning_parts.append(clean)

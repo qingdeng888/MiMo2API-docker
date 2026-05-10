@@ -243,6 +243,7 @@ async def _anthropic_stream_think_wrapper(
                     clean = _strip_citations(clean)
                     clean = _strip_tool_name_prefix(clean, tool_names)
                     clean = _strip_mimo_prefix(clean)
+                    clean = clean_tool_text(clean)
                     if clean:
                         # 缓冲 text，待确认无工具调用后再发
                         content_buffer_events.extend(_emit_text(clean))
@@ -252,6 +253,7 @@ async def _anthropic_stream_think_wrapper(
             clean = _strip_tool_result_blocks(buf_text)
             clean = _strip_citations(clean)
             clean = _strip_mimo_prefix(clean)
+            clean = clean_tool_text(clean)
             events.extend(_emit_text(clean))
         return events
 
@@ -348,6 +350,7 @@ async def _anthropic_stream_think_wrapper(
                 clean = _strip_citations(clean)
                 clean = _strip_tool_name_prefix(clean, tool_names)
                 clean = _strip_mimo_prefix(clean)
+                clean = clean_tool_text(clean)
                 if clean:
                     content_buffer_events.extend(_emit_text(clean))
             elif ev.type == 'tool_calls':
