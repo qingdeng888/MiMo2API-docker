@@ -1,3 +1,8 @@
+## [v2.2.4] — 2026-05-11
+
+### Fixed
+- **换行符保留** — `clean_tool_text` 不再 strip 末尾空白
+
 # 更新日志（Changelog）
 
 本文件记录 MiMo2API 的所有重要变更。
