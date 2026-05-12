@@ -23,6 +23,7 @@ from .utils import parse_curl, build_query_from_messages, extract_medias_from_me
 from .tool_call import extract_tool_call, normalize_tool_call, get_tool_names, clean_tool_text  # build_tool_prompt unused
 from .tool_sieve import StreamSieve
 from .usage_store import add_usage as _add_usage, get_usage as _get_usage, clear_usage as _clear_usage
+from .auth import is_auth_enabled, verify_password, check_admin_auth
 from .session_store import (
     get_or_create_session as _get_or_create_session,
     update_tokens as _update_session_tokens,
@@ -739,6 +740,41 @@ async def _stream_response(
         yield "data: [DONE]\n\n"
 
 
+# ─── 管理页面认证 ─────────────────────────────────────────────
+
+def _check_admin_request(request: Request) -> bool:
+    """从请求头中提取 token 并验证管理权限"""
+    token = request.headers.get("X-Admin-Token", "")
+    return check_admin_auth(token)
+
+
+@router.post("/api/auth/login")
+async def auth_login(request: Request):
+    """管理面板登录"""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid json")
+    password = (data.get("password") or "").strip()
+    if not password:
+        return {"ok": False, "error": "请输入密码"}
+    token = verify_password(password)
+    if token:
+        return {"ok": True, "token": token}
+    return {"ok": False, "error": "密码错误"}
+
+
+@router.get("/api/auth/check")
+async def auth_check(request: Request):
+    """检查认证状态"""
+    if not is_auth_enabled():
+        return {"auth_required": False}
+    token = request.headers.get("X-Admin-Token", "")
+    if check_admin_auth(token):
+        return {"auth_required": True, "authenticated": True}
+    return {"auth_required": True, "authenticated": False}
+
+
 # ─── 管理页面 ─────────────────────────────────────────────────
 
 from pathlib import Path as _Path
@@ -759,7 +795,9 @@ from datetime import datetime as _dt
 
 
 @router.get("/api/accounts")
-async def list_accounts():
+async def list_accounts(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     accounts = []
     for acc in config_manager.config.mimo_accounts:
         token = acc.service_token
@@ -776,6 +814,8 @@ async def list_accounts():
 
 @router.post("/api/account/import-cookie")
 async def import_cookie(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     try:
         data = await request.json()
     except Exception:
@@ -793,6 +833,8 @@ async def import_cookie(request: Request):
 
 @router.post("/api/account/import-curl")
 async def import_curl(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     try:
         data = await request.json()
     except Exception:
@@ -855,7 +897,9 @@ async def _validate_and_save(service_token: str, user_id: str, xiaomichatbot_ph:
 
 
 @router.delete("/api/accounts/{idx}")
-async def delete_account(idx: int):
+async def delete_account(idx: int, request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     accounts = config_manager.config.mimo_accounts
     if idx < 0 or idx >= len(accounts):
         raise HTTPException(404, "account not found")
@@ -865,7 +909,9 @@ async def delete_account(idx: int):
 
 
 @router.post("/api/accounts/{idx}/test")
-async def test_account(idx: int):
+async def test_account(idx: int, request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     accounts = config_manager.config.mimo_accounts
     if idx < 0 or idx >= len(accounts):
         raise HTTPException(404, "account not found")
@@ -894,12 +940,16 @@ async def test_account(idx: int):
 # ─── 旧版管理接口（保留兼容） ────────────────────────────────
 
 @router.get("/api/config")
-async def get_config():
+async def get_config(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     return config_manager.get_config()
 
 
 @router.post("/api/config")
 async def update_config(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     try:
         new_config = await request.json()
         config_manager.update_config(new_config)
@@ -909,20 +959,34 @@ async def update_config(request: Request):
 
 
 @router.post("/api/parse-curl")
-async def parse_curl_command(request: ParseCurlRequest):
-    account = parse_curl(request.curl)
+async def parse_curl_command(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid json")
+    from .models import ParseCurlRequest as _PCR
+    req = _PCR(**data)
+    account = parse_curl(req.curl)
     if not account:
         raise HTTPException(status_code=400, detail={"error": "parse failed"})
     return account.to_dict()
 
 
 @router.post("/api/test-account")
-async def test_account_endpoint(request: TestAccountRequest):
+async def test_account_endpoint(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid json")
     try:
         account = MimoAccount(
-            service_token=request.service_token,
-            user_id=request.user_id,
-            xiaomichatbot_ph=request.xiaomichatbot_ph
+            service_token=data.get("service_token", ""),
+            user_id=data.get("user_id", ""),
+            xiaomichatbot_ph=data.get("xiaomichatbot_ph", "")
         )
         client = MimoClient(account)
         content, _, _ = await client.call_api("hi", False)
@@ -934,21 +998,27 @@ async def test_account_endpoint(request: TestAccountRequest):
 # ─── 用量统计 API ─────────────────────────────────────────────
 
 @router.get("/api/usage")
-async def usage_stats():
+async def usage_stats(request: Request):
     """返回用量统计：按模型分组 + 全部汇总。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     return _get_usage()
 
 
 @router.delete("/api/usage")
-async def clear_usage():
+async def clear_usage(request: Request):
     """清空全部用量统计数据。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     _clear_usage()
     return {"ok": True}
 
 
 @router.post("/api/cleanup")
-async def manual_cleanup():
+async def manual_cleanup(request: Request):
     """手动触发过期会话清理。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     try:
         expired = _get_expired_sessions()
         if not expired:

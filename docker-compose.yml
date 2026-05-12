@@ -13,6 +13,7 @@ services:
     environment:
       - PORT=8080
       - TZ=Asia/Shanghai
+      - ADMIN_PASSWORD=your_secure_password_here
 
 volumes:
   mimo_data:
