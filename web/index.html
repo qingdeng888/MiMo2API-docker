@@ -152,6 +152,41 @@
             .btn-group button { width: 100%; justify-content: center; }
         }
 
+        /* Login overlay */
+        .login-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: linear-gradient(135deg, var(--bg) 0%, #1a1a2e 100%);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 1000;
+        }
+        .login-overlay.hidden { display: none; }
+        .login-box {
+            background: var(--bg-card); border-radius: 16px; padding: 40px;
+            box-shadow: 0 8px 32px var(--shadow); border: 1px solid rgba(255,255,255,0.05);
+            width: 100%; max-width: 380px; text-align: center;
+        }
+        .login-box h2 {
+            font-size: 1.6rem; font-weight: 700; margin-bottom: 8px;
+            background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .login-box p { color: var(--text-muted); font-size: 14px; margin-bottom: 24px; }
+        .login-box input {
+            margin-bottom: 16px; text-align: center; font-size: 15px;
+        }
+        .login-box .login-btn {
+            width: 100%; padding: 12px; font-size: 15px;
+            background: linear-gradient(135deg, var(--primary), #8b5cf6);
+            color: white; border: none; border-radius: 10px; cursor: pointer;
+            font-weight: 500; transition: all 0.2s;
+        }
+        .login-box .login-btn:hover { background: linear-gradient(135deg, var(--primary-hover), #7c3aed); }
+        .login-box .login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .login-error {
+            color: #f87171; font-size: 13px; margin-top: 12px; min-height: 20px;
+        }
+
         /* Usage table */
         .usage-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
         .usage-tbl th, .usage-tbl td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--border); }
@@ -178,7 +213,18 @@
     </style>
 </head>
 <body>
-    <div class="container">
+    <!-- 登录遮罩 -->
+    <div id="loginOverlay" class="login-overlay hidden">
+        <div class="login-box">
+            <h2>MiMo2API</h2>
+            <p>请输入管理密码以继续</p>
+            <input type="password" id="loginPassword" placeholder="输入密码" onkeydown="if(event.key==='Enter')doLogin()">
+            <button class="login-btn" id="loginBtn" onclick="doLogin()">登 录</button>
+            <div class="login-error" id="loginError"></div>
+        </div>
+    </div>
+
+    <div id="mainContent" class="container" style="display:none;">
         <div class="header">
             <h1>MiMo2API</h1>
             <p>小米 MiMo 模型 OpenAI 兼容 API</p>
@@ -254,12 +300,76 @@
                 </div>
             </div>
         </div>
-    </div>
+    </div><!-- end mainContent -->
 
     <div id="toast" class="toast"></div>
 
     <script>
         let cfg = { api_keys: '', mimo_accounts: [] }, parsed = null;
+        let adminToken = localStorage.getItem('admin_token') || '';
+
+        // === 认证相关 ===
+        function getAuthHeaders() {
+            return adminToken ? { 'X-Admin-Token': adminToken } : {};
+        }
+
+        async function checkAuth() {
+            try {
+                const r = await fetch('/api/auth/check', { headers: getAuthHeaders() });
+                const d = await r.json();
+                if (!d.auth_required) {
+                    // 未启用密码认证，直接显示面板
+                    showMainContent();
+                    return;
+                }
+                if (d.authenticated) {
+                    showMainContent();
+                } else {
+                    showLogin();
+                }
+            } catch (e) {
+                // 请求失败，尝试直接显示（兼容旧版）
+                showMainContent();
+            }
+        }
+
+        function showLogin() {
+            $id('loginOverlay').classList.remove('hidden');
+            $id('mainContent').style.display = 'none';
+            setTimeout(() => $id('loginPassword').focus(), 100);
+        }
+
+        function showMainContent() {
+            $id('loginOverlay').classList.add('hidden');
+            $id('mainContent').style.display = 'block';
+            loadConfig();
+        }
+
+        async function doLogin() {
+            const pwd = $id('loginPassword').value.trim();
+            if (!pwd) { $id('loginError').textContent = '请输入密码'; return; }
+            const btn = $id('loginBtn');
+            btn.disabled = true; btn.textContent = '验证中...';
+            $id('loginError').textContent = '';
+            try {
+                const r = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: pwd })
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    adminToken = d.token;
+                    localStorage.setItem('admin_token', adminToken);
+                    showMainContent();
+                } else {
+                    $id('loginError').textContent = d.error || '密码错误';
+                }
+            } catch (e) {
+                $id('loginError').textContent = '请求失败，请重试';
+            }
+            btn.disabled = false; btn.textContent = '登 录';
+        }
 
         // === 工具函数 ===
         function $id(id) { return document.getElementById(id); }
@@ -284,7 +394,8 @@
         // === 加载配置（仅 API Keys） ===
         async function loadConfig() {
             try {
-                const r = await fetch('/api/config');
+                const r = await fetch('/api/config', { headers: getAuthHeaders() });
+                if (r.status === 401) { showLogin(); return; }
                 cfg = await r.json();
                 $id('apiKeys').value = cfg.api_keys || '';
             } catch (e) {}
@@ -296,7 +407,7 @@
             try {
                 await fetch('/api/config', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                     body: JSON.stringify(cfg)
                 });
                 showStatus('keysResult', 'ok', '配置已保存');
@@ -314,7 +425,7 @@
             try {
                 const r = await fetch('/api/parse-curl', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                     body: JSON.stringify({ curl })
                 });
                 if (!r.ok) { showStatus('curlResult', 'err', '解析失败，请检查 cURL 格式'); return; }
@@ -336,7 +447,7 @@
             try {
                 const r = await fetch('/api/test-account', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                     body: JSON.stringify(parsed)
                 });
                 const d = await r.json();
@@ -354,7 +465,7 @@
                 cfg.mimo_accounts.push(parsed);
                 await fetch('/api/config', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                     body: JSON.stringify(cfg)
                 });
                 parsed = null;
@@ -405,7 +516,7 @@
             try {
                 const r = await fetch('/api/account/import-cookie', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                     body: JSON.stringify({ serviceToken: st, userId: uid, xiaomichatbot_ph: ph })
                 });
                 const d = await r.json();
@@ -423,7 +534,8 @@
         // === 账号管理 ===
         async function loadAccounts() {
             try {
-                const r = await fetch('/api/accounts');
+                const r = await fetch('/api/accounts', { headers: getAuthHeaders() });
+                if (r.status === 401) { showLogin(); return; }
                 const d = await r.json();
                 const el = $id('accounts');
                 if (!d.accounts || !d.accounts.length) {
@@ -455,7 +567,7 @@
             btn.disabled = true;
             btn.textContent = '测试中...';
             try {
-                const r = await fetch('/api/accounts/' + i + '/test', { method: 'POST' });
+                const r = await fetch('/api/accounts/' + i + '/test', { method: 'POST', headers: getAuthHeaders() });
                 const d = await r.json();
                 toast(d.ok ? '✅ 有效: ' + (d.response || '').substring(0, 40) : '❌ ' + d.error, !d.ok);
                 loadAccounts();
@@ -469,14 +581,14 @@
             btn.disabled = true;
             btn.textContent = '测试中...';
             try {
-                const r = await fetch('/api/accounts');
+                const r = await fetch('/api/accounts', { headers: getAuthHeaders() });
                 const d = await r.json();
                 if (!d.accounts || !d.accounts.length) { toast('无账号可测试', true); btn.disabled = false; btn.textContent = '测试全部'; return; }
                 let ok = 0;
                 for (let i = 0; i < d.accounts.length; i++) {
                     btn.textContent = '测试中...(' + (i + 1) + '/' + d.accounts.length + ')';
                     try {
-                        const r2 = await fetch('/api/accounts/' + i + '/test', { method: 'POST' });
+                        const r2 = await fetch('/api/accounts/' + i + '/test', { method: 'POST', headers: getAuthHeaders() });
                         const d2 = await r2.json();
                         if (d2.ok) ok++;
                     } catch (e) {}
@@ -493,7 +605,7 @@
             btn.disabled = true;
             btn.textContent = '清理中...';
             try {
-                const r = await fetch('/api/cleanup', { method: 'POST' });
+                const r = await fetch('/api/cleanup', { method: 'POST', headers: getAuthHeaders() });
                 const d = await r.json();
                 toast(d.ok ? d.msg : '清理失败: ' + (d.msg || '未知'), !d.ok);
             } catch (e) { toast('清理失败: ' + e.message, true); }
@@ -504,7 +616,7 @@
         async function delAcct(i) {
             if (!confirm('确定删除此账号？')) return;
             try {
-                await fetch('/api/accounts/' + i, { method: 'DELETE' });
+                await fetch('/api/accounts/' + i, { method: 'DELETE', headers: getAuthHeaders() });
                 toast('已删除');
                 loadAccounts();
                 loadConfig();
@@ -516,7 +628,8 @@
         function fmt(n) { return n.toLocaleString(); }
         async function loadUsage() {
             try {
-                const r = await fetch('/api/usage');
+                const r = await fetch('/api/usage', { headers: getAuthHeaders() });
+                if (r.status === 401) { showLogin(); return; }
                 const data = await r.json();
                 const period = data[usagePeriod] || data.total || {};
                 const models = period.models || {};
@@ -562,7 +675,7 @@
         async function clearUsage() {
             if (!confirm('确定清空全部用量数据？此操作不可撤销。')) return;
             try {
-                const r = await fetch('/api/usage', { method: 'DELETE' });
+                const r = await fetch('/api/usage', { method: 'DELETE', headers: getAuthHeaders() });
                 const d = await r.json();
                 if (d.ok) { toast('已清空'); loadUsage(); }
                 else toast('清空失败', true);
@@ -570,7 +683,7 @@
         }
 
         // === 初始化 ===
-        loadConfig();
+        checkAuth();
     </script>
 </body>
 </html>
