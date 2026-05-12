@@ -19,10 +19,12 @@ from .models import (
 )
 from .config import config_manager, MimoAccount
 from .mimo_client import MimoClient, MimoApiError
+from .account_pool import account_pool
 from .utils import parse_curl, build_query_from_messages, extract_medias_from_messages, upload_media_to_mimo, upload_text_file_to_mimo
 from .tool_call import extract_tool_call, normalize_tool_call, get_tool_names, clean_tool_text  # build_tool_prompt unused
 from .tool_sieve import StreamSieve
 from .usage_store import add_usage as _add_usage, get_usage as _get_usage, clear_usage as _clear_usage
+from .auth import is_auth_enabled, verify_password, check_admin_auth
 from .session_store import (
     get_or_create_session as _get_or_create_session,
     update_tokens as _update_session_tokens,
@@ -377,27 +379,6 @@ async def chat_completions(
     """OpenAI兼容的聊天接口。"""
 
     account = config_manager.get_next_account()
-
-    # # 请求日志（发版时关闭）
-    # try:
-    #     print(f"[REQ] model={request.model} stream={request.stream} "
-    #           f"tools={len(request.tools) if request.tools else 0} "
-    #           f"tool_choice={request.tool_choice} reasoning_effort={request.reasoning_effort}")
-    #     try:
-    #         logf = Path.home() / 'mimo_requests.log'
-    #         if logf.exists() and logf.stat().st_size > 5 * 1024 * 1024:
-    #             logf.write_text('')
-    #         with open(str(logf), 'a') as rf:
-    #             import datetime as dt2
-    #             full = request.model_dump(exclude_none=True)
-    #             full['_timestamp'] = dt2.datetime.now().isoformat()
-    #             rf.write(json.dumps(full, ensure_ascii=False) + '\n')
-    #     except Exception:
-    #         pass
-    # except Exception:
-    #     pass
-
-    account = config_manager.get_next_account()
     if not account:
         raise HTTPException(status_code=503, detail={"error": {"message": "no mimo account"}})
 
@@ -443,7 +424,7 @@ async def chat_completions(
     if request.stream:
         return StreamingResponse(
             _stream_response(client, query, thinking, effective_model, tools_dict, multi_medias,
-                             conv_id=conv_id, account_id=account.user_id),
+                             conv_id=conv_id, account_id=account.user_id, account=account),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -487,6 +468,9 @@ async def chat_completions(
         # 清洗工具名前缀
         content = _strip_tool_name_prefix(content, tool_names)
 
+        # 请求成功 → 释放账号（标记成功）
+        account_pool.release_account(account, success=True)
+
         if tool_calls:
             return _build_response(
                 msg_id, request.model,
@@ -503,8 +487,12 @@ async def chat_completions(
             )
 
     except MimoApiError as e:
+        # 请求失败 → 释放账号（标记失败 + 错误码）
+        account_pool.release_account(account, success=False, error_code=e.status_code)
         raise HTTPException(status_code=e.status_code, detail={"error": {"message": f"MiMo API: {e.response_body[:200]}"}})
     except Exception as e:
+        # 请求失败 → 释放账号（标记失败）
+        account_pool.release_account(account, success=False)
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail={"error": {"message": str(e)}})
@@ -513,7 +501,7 @@ async def chat_completions(
 async def _stream_response(
     client: MimoClient, query: str, thinking: bool, model: str,
     tools: list = None, multi_medias: list = None,
-    conv_id: str = None, account_id: str = None,
+    conv_id: str = None, account_id: str = None, account: MimoAccount = None,
 ):
     """流式响应生成器。
 
@@ -635,6 +623,8 @@ async def _stream_response(
                 yield _build_chunk(msg_id, model, created=created_t,
                                    tool_calls=streaming_tc, finish_reason="tool_calls")
                 yield "data: [DONE]\n\n"
+                if account:
+                    account_pool.release_account(account, success=True)
                 if last_usage:
                     _add_usage(model, last_usage.get("promptTokens", 0), last_usage.get("completionTokens", 0))
                     _update_session_tokens(account_id, conv_id, last_usage.get("promptTokens", 0))
@@ -645,6 +635,8 @@ async def _stream_response(
                 yield _build_chunk(msg_id, model, created=created_t, content=chunk_text)
             yield _build_chunk(msg_id, model, created=created_t, finish_reason="stop")
             yield "data: [DONE]\n\n"
+            if account:
+                account_pool.release_account(account, success=True)
             if last_usage:
                 _add_usage(model, last_usage.get("promptTokens", 0), last_usage.get("completionTokens", 0))
                 _update_session_tokens(account_id, conv_id, last_usage.get("promptTokens", 0))
@@ -714,29 +706,65 @@ async def _stream_response(
 
             yield _build_chunk(msg_id, model, created=created_t, finish_reason="stop")
             yield "data: [DONE]\n\n"
+            if account:
+                account_pool.release_account(account, success=True)
             if last_usage:
                 _add_usage(model, last_usage.get("promptTokens", 0), last_usage.get("completionTokens", 0))
                 _update_session_tokens(account_id, conv_id, last_usage.get("promptTokens", 0))
 
     except httpx.ReadTimeout:
         # 连接读取超时 — 发送优雅结束
+        if account:
+            account_pool.release_account(account, success=False, error_code=408)
         yield _build_chunk(msg_id, model, created=created_t, finish_reason="length")
         yield "data: [DONE]\n\n"
     except MimoApiError as e:
+        if account:
+            account_pool.release_account(account, success=False, error_code=e.status_code)
         error_data = {"error": {"message": f"MiMo API {e.status_code}: {e.response_body[:200]}",
                                 "type": "upstream_error", "code": e.status_code}}
         yield f"data: {json.dumps(error_data)}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as e:
-        # import traceback
-        # tb = traceback.format_exc()
-        # log_path = Path(__file__).parent.parent / "error.log"
-        # if log_path.exists() and log_path.stat().st_size > 2 * 1024 * 1024:
-        #     log_path.write_text('')
-        # with open(log_path, "a") as f:
-        #     f.write(f"=== STREAM ERROR ===\n{tb}\n\n")
+        if account:
+            account_pool.release_account(account, success=False)
         yield f"data: {json.dumps({'error': {'message': str(e)}})}\n\n"
         yield "data: [DONE]\n\n"
+
+
+# ─── 管理页面认证 ─────────────────────────────────────────────
+
+def _check_admin_request(request: Request) -> bool:
+    """从请求头中提取 token 并验证管理权限"""
+    token = request.headers.get("X-Admin-Token", "")
+    return check_admin_auth(token)
+
+
+@router.post("/api/auth/login")
+async def auth_login(request: Request):
+    """管理面板登录"""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid json")
+    password = (data.get("password") or "").strip()
+    if not password:
+        return {"ok": False, "error": "请输入密码"}
+    token = verify_password(password)
+    if token:
+        return {"ok": True, "token": token}
+    return {"ok": False, "error": "密码错误"}
+
+
+@router.get("/api/auth/check")
+async def auth_check(request: Request):
+    """检查认证状态"""
+    if not is_auth_enabled():
+        return {"auth_required": False}
+    token = request.headers.get("X-Admin-Token", "")
+    if check_admin_auth(token):
+        return {"auth_required": True, "authenticated": True}
+    return {"auth_required": True, "authenticated": False}
 
 
 # ─── 管理页面 ─────────────────────────────────────────────────
@@ -759,7 +787,9 @@ from datetime import datetime as _dt
 
 
 @router.get("/api/accounts")
-async def list_accounts():
+async def list_accounts(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     accounts = []
     for acc in config_manager.config.mimo_accounts:
         token = acc.service_token
@@ -776,6 +806,8 @@ async def list_accounts():
 
 @router.post("/api/account/import-cookie")
 async def import_cookie(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     try:
         data = await request.json()
     except Exception:
@@ -793,6 +825,8 @@ async def import_cookie(request: Request):
 
 @router.post("/api/account/import-curl")
 async def import_curl(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     try:
         data = await request.json()
     except Exception:
@@ -855,7 +889,9 @@ async def _validate_and_save(service_token: str, user_id: str, xiaomichatbot_ph:
 
 
 @router.delete("/api/accounts/{idx}")
-async def delete_account(idx: int):
+async def delete_account(idx: int, request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     accounts = config_manager.config.mimo_accounts
     if idx < 0 or idx >= len(accounts):
         raise HTTPException(404, "account not found")
@@ -865,7 +901,9 @@ async def delete_account(idx: int):
 
 
 @router.post("/api/accounts/{idx}/test")
-async def test_account(idx: int):
+async def test_account(idx: int, request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     accounts = config_manager.config.mimo_accounts
     if idx < 0 or idx >= len(accounts):
         raise HTTPException(404, "account not found")
@@ -894,12 +932,16 @@ async def test_account(idx: int):
 # ─── 旧版管理接口（保留兼容） ────────────────────────────────
 
 @router.get("/api/config")
-async def get_config():
+async def get_config(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     return config_manager.get_config()
 
 
 @router.post("/api/config")
 async def update_config(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     try:
         new_config = await request.json()
         config_manager.update_config(new_config)
@@ -909,20 +951,34 @@ async def update_config(request: Request):
 
 
 @router.post("/api/parse-curl")
-async def parse_curl_command(request: ParseCurlRequest):
-    account = parse_curl(request.curl)
+async def parse_curl_command(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid json")
+    from .models import ParseCurlRequest as _PCR
+    req = _PCR(**data)
+    account = parse_curl(req.curl)
     if not account:
         raise HTTPException(status_code=400, detail={"error": "parse failed"})
     return account.to_dict()
 
 
 @router.post("/api/test-account")
-async def test_account_endpoint(request: TestAccountRequest):
+async def test_account_endpoint(request: Request):
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid json")
     try:
         account = MimoAccount(
-            service_token=request.service_token,
-            user_id=request.user_id,
-            xiaomichatbot_ph=request.xiaomichatbot_ph
+            service_token=data.get("service_token", ""),
+            user_id=data.get("user_id", ""),
+            xiaomichatbot_ph=data.get("xiaomichatbot_ph", "")
         )
         client = MimoClient(account)
         content, _, _ = await client.call_api("hi", False)
@@ -931,24 +987,51 @@ async def test_account_endpoint(request: TestAccountRequest):
         return {"success": False, "error": str(e)}
 
 
+# ─── 账号池状态 API ───────────────────────────────────────────
+
+@router.get("/api/account-pool")
+async def account_pool_status(request: Request):
+    """返回智能调度账号池状态（各账号的健康度、并发、冷却等信息）。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
+    return account_pool.get_pool_status()
+
+
+@router.post("/api/account-pool/reset/{user_id}")
+async def reset_account_pool(user_id: str, request: Request):
+    """手动重置指定账号的调度状态（清除冷却和错误计数）。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
+    ok = account_pool.reset_account(user_id)
+    if ok:
+        return {"ok": True, "msg": f"账号 {user_id} 状态已重置"}
+    return {"ok": False, "msg": f"未找到账号 {user_id}"}
+
+
 # ─── 用量统计 API ─────────────────────────────────────────────
 
 @router.get("/api/usage")
-async def usage_stats():
+async def usage_stats(request: Request):
     """返回用量统计：按模型分组 + 全部汇总。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     return _get_usage()
 
 
 @router.delete("/api/usage")
-async def clear_usage():
+async def clear_usage(request: Request):
     """清空全部用量统计数据。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     _clear_usage()
     return {"ok": True}
 
 
 @router.post("/api/cleanup")
-async def manual_cleanup():
+async def manual_cleanup(request: Request):
     """手动触发过期会话清理。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
     try:
         expired = _get_expired_sessions()
         if not expired:
