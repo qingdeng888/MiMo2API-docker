@@ -10,6 +10,8 @@
 本项目基于原[mimo2api](https://github.com/Water008/MiMo2API) 修改。
 本项目所修改代码均为ai完成，不含任何一句人工代码，望周知！
 
+> 📖 [English Version](README_EN.md)
+
 > **💡 不需要工具调用或需要 TTS 语音合成？** 建议使用 [`no-tools` 分支](#无工具分支-no-tools) — 不注入工具 prompt，上下文更干净、输出质量更高，且完整保留 TTS 语音合成功能。
 
 
