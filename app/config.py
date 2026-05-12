@@ -90,6 +90,8 @@ class ConfigManager:
             print(f"加载配置失败: {e}")
             self.config = Config()
             self.save()
+        # 初始化智能账号池
+        self._sync_account_pool()
 
     def save(self):
         """保存配置"""
@@ -107,13 +109,16 @@ class ConfigManager:
             return key in keys
 
     def get_next_account(self) -> Optional[MimoAccount]:
-        """获取下一个账号（轮询）"""
-        with self.lock:
-            if not self.config.mimo_accounts:
-                return None
-            account = self.config.mimo_accounts[self.account_idx % len(self.config.mimo_accounts)]
-            self.account_idx += 1
-            return account
+        """获取下一个可用账号（智能调度）
+
+        委托给 AccountPool 智能调度器，支持：
+        - 请求频率控制
+        - 错误退避
+        - 加权随机选择
+        - 并发限制
+        """
+        from .account_pool import account_pool
+        return account_pool.acquire_account()
 
     def update_config(self, new_config: dict):
         """更新配置"""
@@ -128,6 +133,16 @@ class ConfigManager:
                 models=new_config.get('models', [])
             )
             self.save()
+        # 更新智能账号池
+        self._sync_account_pool()
+
+    def _sync_account_pool(self):
+        """同步账号列表到智能调度池"""
+        try:
+            from .account_pool import account_pool
+            account_pool.init_pool(self.config.mimo_accounts)
+        except Exception as e:
+            print(f"[ConfigManager] 同步账号池失败: {e}")
 
     def get_config(self) -> dict:
         """获取配置"""

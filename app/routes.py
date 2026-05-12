@@ -19,6 +19,7 @@ from .models import (
 )
 from .config import config_manager, MimoAccount
 from .mimo_client import MimoClient, MimoApiError
+from .account_pool import account_pool
 from .utils import parse_curl, build_query_from_messages, extract_medias_from_messages, upload_media_to_mimo, upload_text_file_to_mimo
 from .tool_call import extract_tool_call, normalize_tool_call, get_tool_names, clean_tool_text  # build_tool_prompt unused
 from .tool_sieve import StreamSieve
@@ -378,27 +379,6 @@ async def chat_completions(
     """OpenAI兼容的聊天接口。"""
 
     account = config_manager.get_next_account()
-
-    # # 请求日志（发版时关闭）
-    # try:
-    #     print(f"[REQ] model={request.model} stream={request.stream} "
-    #           f"tools={len(request.tools) if request.tools else 0} "
-    #           f"tool_choice={request.tool_choice} reasoning_effort={request.reasoning_effort}")
-    #     try:
-    #         logf = Path.home() / 'mimo_requests.log'
-    #         if logf.exists() and logf.stat().st_size > 5 * 1024 * 1024:
-    #             logf.write_text('')
-    #         with open(str(logf), 'a') as rf:
-    #             import datetime as dt2
-    #             full = request.model_dump(exclude_none=True)
-    #             full['_timestamp'] = dt2.datetime.now().isoformat()
-    #             rf.write(json.dumps(full, ensure_ascii=False) + '\n')
-    #     except Exception:
-    #         pass
-    # except Exception:
-    #     pass
-
-    account = config_manager.get_next_account()
     if not account:
         raise HTTPException(status_code=503, detail={"error": {"message": "no mimo account"}})
 
@@ -444,7 +424,7 @@ async def chat_completions(
     if request.stream:
         return StreamingResponse(
             _stream_response(client, query, thinking, effective_model, tools_dict, multi_medias,
-                             conv_id=conv_id, account_id=account.user_id),
+                             conv_id=conv_id, account_id=account.user_id, account=account),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -488,6 +468,9 @@ async def chat_completions(
         # 清洗工具名前缀
         content = _strip_tool_name_prefix(content, tool_names)
 
+        # 请求成功 → 释放账号（标记成功）
+        account_pool.release_account(account, success=True)
+
         if tool_calls:
             return _build_response(
                 msg_id, request.model,
@@ -504,8 +487,12 @@ async def chat_completions(
             )
 
     except MimoApiError as e:
+        # 请求失败 → 释放账号（标记失败 + 错误码）
+        account_pool.release_account(account, success=False, error_code=e.status_code)
         raise HTTPException(status_code=e.status_code, detail={"error": {"message": f"MiMo API: {e.response_body[:200]}"}})
     except Exception as e:
+        # 请求失败 → 释放账号（标记失败）
+        account_pool.release_account(account, success=False)
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail={"error": {"message": str(e)}})
@@ -514,7 +501,7 @@ async def chat_completions(
 async def _stream_response(
     client: MimoClient, query: str, thinking: bool, model: str,
     tools: list = None, multi_medias: list = None,
-    conv_id: str = None, account_id: str = None,
+    conv_id: str = None, account_id: str = None, account: MimoAccount = None,
 ):
     """流式响应生成器。
 
@@ -636,6 +623,8 @@ async def _stream_response(
                 yield _build_chunk(msg_id, model, created=created_t,
                                    tool_calls=streaming_tc, finish_reason="tool_calls")
                 yield "data: [DONE]\n\n"
+                if account:
+                    account_pool.release_account(account, success=True)
                 if last_usage:
                     _add_usage(model, last_usage.get("promptTokens", 0), last_usage.get("completionTokens", 0))
                     _update_session_tokens(account_id, conv_id, last_usage.get("promptTokens", 0))
@@ -646,6 +635,8 @@ async def _stream_response(
                 yield _build_chunk(msg_id, model, created=created_t, content=chunk_text)
             yield _build_chunk(msg_id, model, created=created_t, finish_reason="stop")
             yield "data: [DONE]\n\n"
+            if account:
+                account_pool.release_account(account, success=True)
             if last_usage:
                 _add_usage(model, last_usage.get("promptTokens", 0), last_usage.get("completionTokens", 0))
                 _update_session_tokens(account_id, conv_id, last_usage.get("promptTokens", 0))
@@ -715,27 +706,28 @@ async def _stream_response(
 
             yield _build_chunk(msg_id, model, created=created_t, finish_reason="stop")
             yield "data: [DONE]\n\n"
+            if account:
+                account_pool.release_account(account, success=True)
             if last_usage:
                 _add_usage(model, last_usage.get("promptTokens", 0), last_usage.get("completionTokens", 0))
                 _update_session_tokens(account_id, conv_id, last_usage.get("promptTokens", 0))
 
     except httpx.ReadTimeout:
         # 连接读取超时 — 发送优雅结束
+        if account:
+            account_pool.release_account(account, success=False, error_code=408)
         yield _build_chunk(msg_id, model, created=created_t, finish_reason="length")
         yield "data: [DONE]\n\n"
     except MimoApiError as e:
+        if account:
+            account_pool.release_account(account, success=False, error_code=e.status_code)
         error_data = {"error": {"message": f"MiMo API {e.status_code}: {e.response_body[:200]}",
                                 "type": "upstream_error", "code": e.status_code}}
         yield f"data: {json.dumps(error_data)}\n\n"
         yield "data: [DONE]\n\n"
     except Exception as e:
-        # import traceback
-        # tb = traceback.format_exc()
-        # log_path = Path(__file__).parent.parent / "error.log"
-        # if log_path.exists() and log_path.stat().st_size > 2 * 1024 * 1024:
-        #     log_path.write_text('')
-        # with open(log_path, "a") as f:
-        #     f.write(f"=== STREAM ERROR ===\n{tb}\n\n")
+        if account:
+            account_pool.release_account(account, success=False)
         yield f"data: {json.dumps({'error': {'message': str(e)}})}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -993,6 +985,27 @@ async def test_account_endpoint(request: Request):
         return {"success": True, "response": content}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ─── 账号池状态 API ───────────────────────────────────────────
+
+@router.get("/api/account-pool")
+async def account_pool_status(request: Request):
+    """返回智能调度账号池状态（各账号的健康度、并发、冷却等信息）。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
+    return account_pool.get_pool_status()
+
+
+@router.post("/api/account-pool/reset/{user_id}")
+async def reset_account_pool(user_id: str, request: Request):
+    """手动重置指定账号的调度状态（清除冷却和错误计数）。"""
+    if not _check_admin_request(request):
+        raise HTTPException(status_code=401, detail={"error": "未认证"})
+    ok = account_pool.reset_account(user_id)
+    if ok:
+        return {"ok": True, "msg": f"账号 {user_id} 状态已重置"}
+    return {"ok": False, "msg": f"未找到账号 {user_id}"}
 
 
 # ─── 用量统计 API ─────────────────────────────────────────────

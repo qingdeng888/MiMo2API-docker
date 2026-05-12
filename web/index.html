@@ -236,6 +236,7 @@
                 <div class="tab active" onclick="switchTab('curl')">cURL</div>
                 <div class="tab" onclick="switchTab('cookie')">Cookie</div>
                 <div class="tab" onclick="switchTab('accounts')">账号</div>
+                <div class="tab" onclick="switchTab('pool')">调度池</div>
                 <div class="tab" onclick="switchTab('apikey')">API Key</div>
                 <div class="tab" onclick="switchTab('usage')">用量统计</div>
             </div>
@@ -275,6 +276,14 @@
                         <button class="btn-outline" onclick="loadAccounts()">刷新</button>
                         <button class="btn-success" onclick="testAll()">测试全部</button>
                         <button class="btn-primary" onclick="cleanupSessions()" style="background:#7c3aed">清理过期会话</button>
+                    </div>
+                </div>
+
+                <!-- 智能调度池 -->
+                <div id="panel-pool" class="tab-panel">
+                    <div id="poolContent"><div class="empty">加载中...</div></div>
+                    <div class="btn-group" style="margin-top:14px">
+                        <button class="btn-outline" onclick="loadPool()">刷新</button>
                     </div>
                 </div>
 
@@ -383,11 +392,12 @@
         }
         function switchTab(t) {
             document.querySelectorAll('.tab').forEach((el, i) => {
-                el.className = 'tab' + (['curl','cookie','accounts','apikey','usage'][i] === t ? ' active' : '');
+                el.className = 'tab' + (['curl','cookie','accounts','pool','apikey','usage'][i] === t ? ' active' : '');
             });
             document.querySelectorAll('.tab-panel').forEach(p => p.className = 'tab-panel');
             $id('panel-' + t).className = 'tab-panel active';
             if (t === 'accounts') loadAccounts();
+            if (t === 'pool') loadPool();
             if (t === 'usage') loadUsage();
         }
 
@@ -680,6 +690,60 @@
                 if (d.ok) { toast('已清空'); loadUsage(); }
                 else toast('清空失败', true);
             } catch (e) { toast('清空失败: ' + e.message, true); }
+        }
+
+        // === 智能调度池 ===
+        async function loadPool() {
+            try {
+                const r = await fetch('/api/account-pool', { headers: getAuthHeaders() });
+                if (r.status === 401) { showLogin(); return; }
+                const data = await r.json();
+                const el = $id('poolContent');
+                if (!data.accounts || !data.accounts.length) {
+                    el.innerHTML = '<div class="empty">暂无账号</div>';
+                    return;
+                }
+                let html = '<div style="margin-bottom:12px;font-size:12px;color:var(--text-muted)">'
+                    + '可用: <b style="color:var(--success)">' + data.available_accounts + '</b> / ' + data.total_accounts
+                    + ' · 间隔: ' + data.config.min_request_interval + 's'
+                    + ' · 并发: ' + data.config.max_concurrency_per_account
+                    + '</div>';
+                html += data.accounts.map(a => {
+                    const statusColor = a.disabled ? '#ef4444' : a.available ? '#22c55e' : '#eab308';
+                    const statusText = a.disabled ? '已禁用' : a.available ? '可用' : '冷却中';
+                    const cooldown = a.cooldown_remaining > 0 ? `<span style="color:#eab308;font-size:11px">冷却 ${a.cooldown_remaining}s</span>` : '';
+                    return `<div class="account">
+                        <div class="info-line">
+                            <span class="status-dot" style="background:${statusColor}"></span>
+                            <b>userId:</b> <code>${a.user_id}</code>
+                            <span style="color:${statusColor};margin-left:8px;font-size:12px">${statusText}</span>
+                            ${cooldown}
+                        </div>
+                        <div class="info-line" style="display:flex;gap:16px;flex-wrap:wrap">
+                            <span>权重: <b>${a.weight}</b></span>
+                            <span>并发: <b>${a.active_requests}</b></span>
+                            <span>成功率: <b>${a.success_rate}%</b></span>
+                            <span>总请求: <b>${a.total_requests}</b></span>
+                            <span>错误: <b style="color:${a.consecutive_errors > 0 ? '#ef4444' : 'inherit'}">${a.consecutive_errors}</b></span>
+                        </div>
+                        <div class="actions">
+                            <button class="btn-outline" onclick="resetPoolAccount('${a.user_id}')">重置状态</button>
+                        </div>
+                    </div>`;
+                }).join('');
+                el.innerHTML = html;
+            } catch (e) {
+                $id('poolContent').innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+            }
+        }
+
+        async function resetPoolAccount(userId) {
+            try {
+                const r = await fetch('/api/account-pool/reset/' + userId, { method: 'POST', headers: getAuthHeaders() });
+                const d = await r.json();
+                toast(d.ok ? d.msg : d.msg, !d.ok);
+                loadPool();
+            } catch (e) { toast('重置失败', true); }
         }
 
         // === 初始化 ===

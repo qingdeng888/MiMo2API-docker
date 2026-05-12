@@ -41,6 +41,7 @@ from .batch import (
 from .batch import init_batch_storage as _anthropic_init_batch_storage
 from .mimo_client import MimoClient, MimoApiError
 from .config import config_manager
+from .account_pool import account_pool
 from .models import OpenAIMessage
 from .utils import build_query_from_messages, extract_medias_from_messages, upload_media_to_mimo, upload_text_file_to_mimo
 from .tool_call import extract_tool_call, get_tool_names, clean_tool_text
@@ -503,11 +504,23 @@ async def anthropic_messages(
     # ═══════════════════════════════════════════════════════════
     if stream:
         async def _wrap():
-            mimo_gen = client.stream_api(query, False, model, multi_medias=multi_medias, conversation_id=conv_id)
-            async for event in _anthropic_stream_think_wrapper(
-                mimo_gen, model, msg_id, tool_names=tool_names,
-            ):
-                yield event
+            try:
+                mimo_gen = client.stream_api(query, False, model, multi_medias=multi_medias, conversation_id=conv_id)
+                async for event in _anthropic_stream_think_wrapper(
+                    mimo_gen, model, msg_id, tool_names=tool_names,
+                ):
+                    yield event
+                # 流式成功 → 释放账号
+                account_pool.release_account(account, success=True)
+            except MimoApiError as e:
+                account_pool.release_account(account, success=False, error_code=e.status_code)
+                yield _make_sse("error", {"type": "error", "error": {"type": "api_error", "message": f"MiMo API {e.status_code}"}})
+            except httpx.ReadTimeout:
+                account_pool.release_account(account, success=False, error_code=408)
+                yield _make_sse("error", {"type": "error", "error": {"type": "timeout_error", "message": "upstream timeout"}})
+            except Exception as e:
+                account_pool.release_account(account, success=False)
+                yield _make_sse("error", {"type": "error", "error": {"type": "internal_error", "message": str(e)[:200]}})
 
         return StreamingResponse(
             _wrap(),
@@ -575,14 +588,21 @@ async def anthropic_messages(
         # 存储消息
         _anthropic_store_message(msg_id, anthropic_result)
 
+        # 请求成功 → 释放账号
+        account_pool.release_account(account, success=True)
+
         return anthropic_result
 
     except MimoApiError as e:
+        # 请求失败 → 释放账号（标记失败 + 错误码）
+        account_pool.release_account(account, success=False, error_code=e.status_code)
         raise HTTPException(
             status_code=e.status_code,
             detail=_anthropic_error_response(f"MiMo API: {e.response_body[:200]}", "api_error"),
         )
     except Exception as e:
+        # 请求失败 → 释放账号
+        account_pool.release_account(account, success=False)
         import traceback
         traceback.print_exc()
         raise HTTPException(
