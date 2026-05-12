@@ -671,6 +671,31 @@
                     </tr>`;
                 }
                 html += '</tbody></table></div>';
+
+                // 按 API Key 统计
+                const apiKeys = data.api_keys || {};
+                const akEntries = Object.entries(apiKeys).sort((a, b) => b[1].requests - a[1].requests);
+                if (akEntries.length) {
+                    html += '<div style="margin-top:20px;font-size:12px;color:var(--text-muted);margin-bottom:8px">按 API Key 统计（全部累计）</div>';
+                    html += '<div class="usage-scroll"><table class="usage-tbl"><thead><tr><th class="model-cell">API Key</th><th>请求</th><th>输入</th><th>输出</th><th>总计</th></tr></thead><tbody>';
+                    for (const [key, k] of akEntries) {
+                        html += `<tr><td class="model-cell"><code style="font-size:11px;color:#7dd3fc">${key}</code></td><td>${fmt(k.requests)}</td><td>${fmt(k.prompt_tokens)}</td><td>${fmt(k.completion_tokens)}</td><td>${fmt(k.total_tokens)}</td></tr>`;
+                    }
+                    html += '</tbody></table></div>';
+                }
+
+                // 按 MiMo 账号统计
+                const accounts = data.accounts || {};
+                const accEntries = Object.entries(accounts).sort((a, b) => b[1].requests - a[1].requests);
+                if (accEntries.length) {
+                    html += '<div style="margin-top:20px;font-size:12px;color:var(--text-muted);margin-bottom:8px">按 MiMo 账号统计（全部累计）</div>';
+                    html += '<div class="usage-scroll"><table class="usage-tbl"><thead><tr><th class="model-cell">账号 ID</th><th>请求</th><th>输入</th><th>输出</th><th>总计</th></tr></thead><tbody>';
+                    for (const [uid, u] of accEntries) {
+                        html += `<tr><td class="model-cell"><code style="font-size:11px;color:#7dd3fc">${uid}</code></td><td>${fmt(u.requests)}</td><td>${fmt(u.prompt_tokens)}</td><td>${fmt(u.completion_tokens)}</td><td>${fmt(u.total_tokens)}</td></tr>`;
+                    }
+                    html += '</tbody></table></div>';
+                }
+
                 $id('usageContent').innerHTML = html;
             } catch (e) {
                 $id('usageContent').innerHTML = '<div class="usage-empty">加载失败: ' + e.message + '</div>';
