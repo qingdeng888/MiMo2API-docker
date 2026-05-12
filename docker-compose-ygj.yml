@@ -1,0 +1,17 @@
+services:
+  mimo2api:
+    image: qingdeng/mimo-free-api:v0.0.1
+    container_name: mimo2api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.json:/app/config.json
+      - mimo_data:/app/data
+    environment:
+      - PORT=8080
+      - TZ=Asia/Shanghai
+      - ADMIN_PASSWORD=your_secure_password_here
+
+volumes:
+  mimo_data:
