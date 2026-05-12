@@ -356,7 +356,8 @@ def _extract_json_tool_call(
     """从文本中提取 JSON 格式的工具调用。"""
     # 先尝试用 _find_balanced_json 找到所有可能的 JSON 对象
     start = 0
-    while True:
+    text_len = len(text)
+    while start < text_len:
         brace = text.find("{", start)
         if brace == -1:
             break
@@ -390,7 +391,11 @@ def _extract_json_tool_call(
             if tc:
                 return [tc]
 
-        start = text.find("}", brace + len(js)) + 1
+        # 解析成功但非工具调用：跳过这段 JSON 继续搜索
+        # 必须无条件前进，防止死循环（text.find 返回 -1 时 +1 = 0 会回到开头）
+        start = brace + len(js) if js else brace + 1
+
+    return None
 
 
 # ─── 策略4: <tool_call> XML（MiMo 原生） ───────────────────

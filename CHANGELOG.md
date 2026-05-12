@@ -1,3 +1,8 @@
+## [v2.2.5] — 2026-05-12
+
+### Fixed
+- **工具调用死循环** — `_extract_json_tool_call` 中 `start = text.find("}", ...) + 1` 当 `find` 返回 -1 时回到 0，导致模型回复里夹带合法但非 tool_call 的 JSON 片段（如 `{"a":1}`、代码示例、tool_result 回传）时进入死循环，请求无限 hang 住。改为 `start = brace + len(js)` 无条件前进，并显式 `return None` 收尾
+
 ## [v2.2.4] — 2026-05-11
 
 ### Fixed
