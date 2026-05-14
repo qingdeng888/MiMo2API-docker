@@ -1,5 +1,9 @@
 ## [v2.2.5] — 2026-05-12
 
+### 新增
+- **多语言支持** — 管理面板支持中英双语切换（🌐 EN/中 按钮），涵盖所有 UI 文本
+- **英文 README** — 新增 `README_EN.md` 英文版文档，中英互链
+
 ### Fixed
 - **工具调用死循环** — `_extract_json_tool_call` 中 `start = text.find("}", ...) + 1` 当 `find` 返回 -1 时回到 0，导致模型回复里夹带合法但非 tool_call 的 JSON 片段（如 `{"a":1}`、代码示例、tool_result 回传）时进入死循环，请求无限 hang 住。改为 `start = brace + len(js)` 无条件前进，并显式 `return None` 收尾
 

@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua
 # 复制项目文件
 COPY . .
 
+# 没有 config.json 时使用示例配置
+RUN test -f config.json || cp config.example.json config.json
+
 # 暴露端口
 EXPOSE 8080
 

@@ -10,6 +10,8 @@
 本项目基于原[mimo2api](https://github.com/Water008/MiMo2API) 修改。
 本项目所修改代码均为ai完成，不含任何一句人工代码，望周知！
 
+> 📖 [English Version](README_EN.md)
+
 > **💡 不需要工具调用或需要 TTS 语音合成？** 建议使用 [`no-tools` 分支](#无工具分支-no-tools) — 不注入工具 prompt，上下文更干净、输出质量更高，且完整保留 TTS 语音合成功能。
 
 
@@ -104,6 +106,25 @@ chmod +x deploy.sh
 ```
 
 部署完成后，服务已在 **前台** 启动。见下方[管理命令](#管理命令)了解后台运行等方式。
+
+### Docker 部署
+
+```bash
+docker run -d -p 8080:8080 -v $(pwd)/config.json:/app/config.json ghcr.io/fly143/mimo2api:latest
+```
+
+或使用 docker-compose：
+
+```yaml
+services:
+  mimo2api:
+    image: ghcr.io/fly143/mimo2api:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.json:/app/config.json
+    restart: unless-stopped
+```
 
 > 💡 **不需要工具调用或需要 TTS？** 克隆 [`no-tools` 分支](https://github.com/Fly143/MiMo2API/tree/no-tools) 即可获得更干净的纯对话版本（无 prompt 注入，输出质量更高），且包含完整语音合成（TTS）功能。
 
